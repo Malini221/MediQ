@@ -1,94 +1,89 @@
 -- Migration 007: Robust Auth Trigger for Profiles and Patient Record Provisioning
--- Fixes "Database error saving new user" by setting explicit search_path,
--- providing safe fallback for date_of_birth, and preventing unhandled exceptions.
+-- Fixes "Database error saving new user" and keeps patient provisioning idempotent.
+
+ALTER TABLE public.patients
+  ALTER COLUMN date_of_birth DROP NOT NULL;
 
 CREATE OR REPLACE FUNCTION public.handle_new_user()
-RETURNS trigger AS $$
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
 DECLARE
-  extracted_role text;
-  safe_role public.system_role_enum;
-  new_patient_id uuid;
-  dob_str text;
-  parsed_dob date;
+  v_role public.system_role_enum;
+  v_full_name text;
+  v_dob date;
+  v_diagnosis text;
 BEGIN
-  -- Extract system role from user metadata
-  extracted_role := COALESCE(
-    new.raw_user_meta_data->>'system_role',
-    new.raw_user_meta_data->>'account_type',
-    'family_caregiver'
+  v_full_name := COALESCE(
+    NULLIF(trim(NEW.raw_user_meta_data->>'full_name'), ''),
+    NULLIF(trim(NEW.raw_user_meta_data->>'name'), ''),
+    split_part(COALESCE(NEW.email, 'User'), '@', 1)
   );
 
-  -- Safely cast to system_role_enum
   BEGIN
-    safe_role := extracted_role::public.system_role_enum;
-  EXCEPTION WHEN OTHERS THEN
-    safe_role := 'family_caregiver'::public.system_role_enum;
+    v_role := COALESCE(
+      (NEW.raw_user_meta_data->>'system_role')::public.system_role_enum,
+      'family_caregiver'::public.system_role_enum
+    );
+  EXCEPTION WHEN invalid_text_representation THEN
+    v_role := 'family_caregiver'::public.system_role_enum;
   END;
 
-  -- 1. Create base profile (ON CONFLICT DO NOTHING for idempotent retries)
   INSERT INTO public.profiles (id, full_name, system_role)
-  VALUES (
-    new.id,
-    COALESCE(new.raw_user_meta_data->>'full_name', 'Unknown User'),
-    safe_role
-  )
-  ON CONFLICT (id) DO UPDATE SET
-    full_name = EXCLUDED.full_name,
-    system_role = EXCLUDED.system_role;
+  VALUES (NEW.id, v_full_name, v_role)
+  ON CONFLICT (id) DO UPDATE
+    SET full_name = EXCLUDED.full_name,
+        system_role = EXCLUDED.system_role,
+        updated_at = now();
 
-  -- 2. Provision patient record ONLY if role is 'patient'
-  IF safe_role = 'patient' THEN
-    dob_str := new.raw_user_meta_data->>'date_of_birth';
-    
-    -- Parse or default date of birth safely without throwing
-    IF dob_str IS NOT NULL AND dob_str <> '' THEN
-      BEGIN
-        parsed_dob := dob_str::date;
-      EXCEPTION WHEN OTHERS THEN
-        parsed_dob := CURRENT_DATE - INTERVAL '30 years';
-      END;
-    ELSE
-      parsed_dob := CURRENT_DATE - INTERVAL '30 years';
-    END IF;
+  IF v_role = 'patient'::public.system_role_enum THEN
+    BEGIN
+      v_dob := COALESCE(
+        NULLIF(NEW.raw_user_meta_data->>'date_of_birth', '')::date,
+        NULLIF(NEW.raw_user_meta_data->>'dob', '')::date
+      );
+    EXCEPTION WHEN others THEN
+      v_dob := NULL;
+    END;
 
-    -- Create patient record
+    v_diagnosis := COALESCE(
+      NULLIF(trim(NEW.raw_user_meta_data->>'primary_diagnosis'), ''),
+      NULLIF(trim(NEW.raw_user_meta_data->>'diagnosis'), ''),
+      'Not specified'
+    );
+
     INSERT INTO public.patients (
-      full_name, 
-      date_of_birth, 
-      primary_diagnosis
+      auth_user_id,
+      full_name,
+      date_of_birth,
+      primary_diagnosis,
+      baseline_conditions
     )
     VALUES (
-      COALESCE(new.raw_user_meta_data->>'full_name', 'Unknown Patient'),
-      parsed_dob,
-      'Condition pending assessment'
+      NEW.id,
+      v_full_name,
+      v_dob,
+      v_diagnosis,
+      '{}'::jsonb
     )
-    RETURNING id INTO new_patient_id;
-
-    -- Bind user to patient record
-    INSERT INTO public.patient_memberships (
-      user_id, 
-      patient_id, 
-      assigned_role
-    )
-    VALUES (
-      new.id,
-      new_patient_id,
-      'patient'::public.system_role_enum
-    )
-    ON CONFLICT (user_id, patient_id) DO NOTHING;
+    ON CONFLICT (auth_user_id) DO UPDATE
+      SET full_name = EXCLUDED.full_name,
+          date_of_birth = EXCLUDED.date_of_birth,
+          primary_diagnosis = EXCLUDED.primary_diagnosis,
+          updated_at = now();
   END IF;
 
-  RETURN new;
-EXCEPTION WHEN OTHERS THEN
-  -- Log error in PostgreSQL log and return new so auth.users insertion is not aborted abruptly
-  RAISE WARNING 'handle_new_user error: %', SQLERRM;
-  RETURN new;
+  RETURN NEW;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
+$$;
 
--- Ensure trigger is active on auth.users
 DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
 
 CREATE TRIGGER on_auth_user_created
   AFTER INSERT ON auth.users
   FOR EACH ROW EXECUTE PROCEDURE public.handle_new_user();
+
+COMMENT ON COLUMN public.patients.date_of_birth IS
+  'Optional during self-service patient registration; may be completed later in the patient profile.';
