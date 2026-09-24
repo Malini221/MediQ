@@ -10,9 +10,9 @@ app = FastAPI(
     version="0.1.0",
 )
 
-# Local Vite ports can change (5173, 5174, etc.). During development we allow
-# localhost/127.0.0.1 origins and all request headers/methods so Authorization
-# bearer tokens can pass the browser's CORS preflight. Production remains explicit.
+# Local Vite ports can change (5173, 5174, etc.). During development the
+# browser is allowed to send Authorization bearer headers from any local
+# frontend origin. Production remains restricted to FRONTEND_URL.
 if settings.ENVIRONMENT == "development":
     cors_origins = ["*"]
     cors_allow_credentials = False
@@ -23,7 +23,6 @@ else:
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
-    allow_origin_regex=r"^https?://(localhost|127\\.0\\.0\\.1)(:\\d+)?$" if settings.ENVIRONMENT == "development" else None,
     allow_credentials=cors_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
