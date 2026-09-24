@@ -2,19 +2,23 @@ import { useEffect, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { patientService } from '../services/patients';
 import { handoversService } from '../services/handovers';
-import { Patient, Observation } from '../types/models';
-import { LoadingState, ErrorState, EmptyState } from '../components/ui/states';
-import { Activity, Calendar, ArrowLeft, Clock, MessageSquareText, ShieldAlert, BadgeCheck } from '@/components/common/Icon';
-import { cn } from '../lib/utils';
-import { format, differenceInYears } from 'date-fns';
-import { PriorityBadge } from '../components/observation/PriorityBadge';
+import { clinicalGuidanceService } from '../services/clinicalGuidance';
+import { Patient, Observation, Handover, ClinicalGuidanceResult } from '../types/models';
+import { ErrorState, EmptyState, SkeletonCard } from '../components/ui/states';
+import { MediQIcon } from '../components/common/MediQIcon';
+
+type WorkspaceTab = 'overview' | 'observations' | 'handovers' | 'guidance';
 
 export function PatientDetail() {
   const { patientId } = useParams<{ patientId: string }>();
+  const navigate = useNavigate();
+
   const [patient, setPatient] = useState<Patient | null>(null);
   const [observations, setObservations] = useState<Observation[]>([]);
-  const navigate = useNavigate();
+  const [handovers, setHandovers] = useState<Handover[]>([]);
+  const [guidance, setGuidance] = useState<ClinicalGuidanceResult[]>([]);
   
+  const [activeTab, setActiveTab] = useState<WorkspaceTab>('overview');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [generatingHandover, setGeneratingHandover] = useState(false);
@@ -22,29 +26,39 @@ export function PatientDetail() {
   useEffect(() => {
     async function loadPatientData() {
       if (!patientId) return;
-      
+
       try {
         setLoading(true);
-        // Load patient and timeline simultaneously
-        const [patientData, obsData] = await Promise.all([
-          patientService.getPatient(patientId),
-          patientService.getPatientObservations(patientId)
-        ]);
+        setError(null);
         
-        setPatient(patientData);
-        setObservations(obsData);
+        const [pData, obsData, hData] = await Promise.all([
+          patientService.getPatient(patientId),
+          patientService.getPatientObservations(patientId),
+          handoversService.getPatientHandovers(patientId).catch(() => [])
+        ]);
+
+        setPatient(pData);
+        setObservations(obsData.sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at)));
+        setHandovers(hData.sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at)));
+
+        // Automatically fetch relevant clinical guidance if diagnosis exists
+        if (pData.primary_diagnosis) {
+          clinicalGuidanceService.searchClinicalGuidance(pData.primary_diagnosis, 3)
+            .then(setGuidance)
+            .catch(() => {});
+        }
       } catch (err: any) {
         console.error('Failed to fetch patient details:', err);
-        if (err.status === 404 || err.status === 403) {
-          setError('Patient unavailable. You may not have access to this record.');
+        if (err?.status === 404 || err?.status === 403) {
+          setError('Patient unavailable or you are not authorized to view this record.');
         } else {
-          setError(err.message || 'Unable to load patient record at this time.');
+          setError(err?.message || 'Unable to load patient record at this time.');
         }
       } finally {
         setLoading(false);
       }
     }
-    
+
     loadPatientData();
   }, [patientId]);
 
@@ -53,34 +67,38 @@ export function PatientDetail() {
     try {
       setGeneratingHandover(true);
       const handover = await handoversService.generateHandover(patientId);
-      navigate(`/dashboard/handovers/${handover.id}`);
-    } catch (err) {
+      setHandovers(prev => [handover, ...prev]);
+      setActiveTab('handovers');
+    } catch (err: any) {
       console.error('Failed to generate handover:', err);
-      alert('Failed to generate handover. Make sure there are pending observations.');
+      alert('Failed to generate handover. Make sure there are recent observations for this patient.');
     } finally {
       setGeneratingHandover(false);
     }
   };
 
   if (loading) {
-    return <LoadingState message="Loading patient record..." className="h-[60vh]" />;
-  }
-
-  if (error || !patient) {
     return (
-      <div className="h-[60vh] flex items-center justify-center">
-        <ErrorState 
-          title="Access Denied or Unavailable" 
-          message={error || "Patient not found."} 
-        />
+      <div className="space-y-6 mediq-reveal">
+        <section className="mediq-surface p-6 md:p-8">
+          <div className="h-4 w-32 bg-slate-100 animate-pulse rounded mb-2" />
+          <div className="h-8 w-64 bg-slate-100 animate-pulse rounded" />
+        </section>
+        <SkeletonCard />
       </div>
     );
   }
 
-  // Format date safely
-  const getAge = (dob: string) => {
+  if (error || !patient) {
+    return <ErrorState title="Patient Unavailable" message={error || 'Patient record not found.'} onRetry={() => window.location.reload()} />;
+  }
+
+  const getAge = (dob?: string) => {
+    if (!dob) return null;
     try {
-      return differenceInYears(new Date(), new Date(dob));
+      const diff = Date.now() - new Date(dob).getTime();
+      const ageDate = new Date(diff);
+      return Math.abs(ageDate.getUTCFullYear() - 1970);
     } catch {
       return null;
     }
@@ -88,182 +106,285 @@ export function PatientDetail() {
   const age = getAge(patient.date_of_birth);
 
   return (
-    <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500 pb-10">
-      
-      {/* Header & Back Navigation */}
-      <div className="flex items-center gap-4">
-        <Link 
-          to="/dashboard/patients"
-          className="p-2 -ml-2 rounded-full hover:bg-black/5 text-mediq-slate transition-colors"
-          aria-label="Back to patients"
-        >
-          <ArrowLeft className="w-5 h-5" />
-        </Link>
-        <h1 className="font-heading text-2xl font-bold text-mediq-navy tracking-tight">Patient Record</h1>
-      </div>
+    <div className="space-y-6 mediq-reveal pb-10">
+      {/* Patient Workspace Header */}
+      <section className="mediq-surface p-6 md:p-8 flex flex-col md:flex-row md:items-center justify-between gap-6">
+        <div className="flex items-center gap-4">
+          <Link
+            to="/dashboard/patients"
+            className="w-10 h-10 rounded-full border border-slate-200 flex items-center justify-center text-slate-500 hover:text-[#0B132B] hover:border-slate-300 transition-colors shrink-0"
+            aria-label="Back to Patients"
+          >
+            <MediQIcon name="arrow" size={16} className="rotate-180" />
+          </Link>
+          <div className="w-14 h-14 rounded-2xl bg-[#1A5CFF]/10 text-[#1A5CFF] font-bold text-xl flex items-center justify-center shrink-0">
+            {patient.full_name.charAt(0).toUpperCase()}
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <h1 className="font-heading text-2xl md:text-3xl font-bold text-[#0B132B]">{patient.full_name}</h1>
+              <span className="px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-600 text-xs font-semibold">
+                {age !== null ? `${age} yrs` : 'Age unknown'}
+              </span>
+            </div>
+            <p className="text-sm text-slate-500 mt-1">
+              Primary Diagnosis: <span className="font-semibold text-[#0B132B]">{patient.primary_diagnosis || 'Not set'}</span>
+            </p>
+          </div>
+        </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        
-        {/* Left Column: Patient Identity & Baseline (2 cols on large) */}
-        <div className="lg:col-span-1 space-y-6">
-          <div className="bg-white rounded-[24px] border border-border p-6 shadow-sm">
-            <div className="flex items-center gap-4 mb-6">
-              <div className="w-14 h-14 rounded-full bg-mediq-bg-blueTint flex items-center justify-center text-mediq-blue font-bold text-xl">
-                {patient.full_name.charAt(0).toUpperCase()}
-              </div>
-              <div>
-                <h2 className="font-heading text-xl font-bold text-mediq-navy truncate" title={patient.full_name}>
-                  {patient.full_name}
-                </h2>
-                <p className="text-sm text-mediq-slate flex items-center gap-1.5 mt-0.5">
-                  <Calendar className="w-4 h-4" />
-                  {age !== null ? `${age} years old` : 'Age unknown'}
-                </p>
-              </div>
+        <div className="flex flex-wrap items-center gap-3">
+          <Link
+            to={`/dashboard/patients/${patient.id}/observations/new`}
+            className="inline-flex items-center gap-2 rounded-full bg-[#1A5CFF] text-white px-5 py-2.5 text-sm font-semibold hover:opacity-95 transition-opacity"
+          >
+            <MediQIcon name="plus" size={16} />
+            Record Note
+          </Link>
+
+          <button
+            onClick={handleGenerateHandover}
+            disabled={generatingHandover}
+            className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-5 py-2.5 text-sm font-semibold text-[#0B132B] hover:border-[#1A5CFF] transition-all disabled:opacity-50"
+          >
+            <MediQIcon name="handovers" size={16} />
+            {generatingHandover ? 'Generating...' : 'Generate Handover'}
+          </button>
+        </div>
+      </section>
+
+      {/* Navigation Tabs for Workspace Context */}
+      <section className="mediq-surface p-2 flex gap-1 overflow-x-auto">
+        {(['overview', 'observations', 'handovers', 'guidance'] as WorkspaceTab[]).map(tab => (
+          <button
+            key={tab}
+            onClick={() => setActiveTab(tab)}
+            className={`px-5 py-2.5 rounded-xl text-sm font-semibold capitalize whitespace-nowrap transition-all ${
+              activeTab === tab
+                ? 'bg-[#1A5CFF] text-white'
+                : 'text-slate-600 hover:text-[#0B132B] hover:bg-slate-50'
+            }`}
+          >
+            {tab === 'overview' ? 'Patient Overview' : tab}
+            {tab === 'observations' && ` (${observations.length})`}
+            {tab === 'handovers' && ` (${handovers.length})`}
+          </button>
+        ))}
+      </section>
+
+      {/* Tab Content */}
+      {activeTab === 'overview' && (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div className="lg:col-span-2 space-y-6">
+            {/* Baseline Conditions */}
+            <div className="mediq-surface p-6 space-y-4">
+              <h2 className="font-heading text-lg font-bold text-[#0B132B]">Baseline Health Indicators</h2>
+              {patient.baseline_conditions && Object.keys(patient.baseline_conditions).length > 0 ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {Object.entries(patient.baseline_conditions).map(([key, val]) => (
+                    <div key={key} className="rounded-xl border border-slate-100 bg-slate-50 p-4">
+                      <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider capitalize">{key.replace(/_/g, ' ')}</p>
+                      <p className="text-sm font-semibold text-[#0B132B] mt-1">{String(val)}</p>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-slate-500">No baseline health indicators logged yet for this patient.</p>
+              )}
             </div>
 
-            <div className="space-y-4 pt-4 border-t border-border">
-              <div>
-                <p className="text-xs font-semibold text-mediq-slate uppercase tracking-wider mb-1">Primary Note</p>
-                <p className="text-sm text-foreground">{patient.primary_diagnosis || "None recorded"}</p>
+            {/* Recent Observations Timeline */}
+            <div className="mediq-surface p-6 space-y-4">
+              <div className="flex items-center justify-between">
+                <h2 className="font-heading text-lg font-bold text-[#0B132B]">Recent Care Observations</h2>
+                <button onClick={() => setActiveTab('observations')} className="text-xs font-semibold text-[#1A5CFF]">
+                  View all ({observations.length})
+                </button>
               </div>
-              
-              {patient.baseline_conditions && Object.keys(patient.baseline_conditions).length > 0 && (
-                <div>
-                  <p className="text-xs font-semibold text-mediq-slate uppercase tracking-wider mb-2">Baseline Info</p>
-                  <ul className="space-y-2">
-                    {Object.entries(patient.baseline_conditions).map(([key, val]) => (
-                      <li key={key} className="flex flex-col">
-                        <span className="text-xs text-mediq-slate capitalize">{key.replace(/_/g, ' ')}</span>
-                        <span className="text-sm font-medium text-foreground">{String(val)}</span>
-                      </li>
-                    ))}
-                  </ul>
+
+              {observations.length === 0 ? (
+                <EmptyState
+                  title="No observations logged for this patient"
+                  description="Start by capturing a text note or recording a voice observation."
+                  actionText="Add First Observation"
+                  onAction={() => navigate(`/dashboard/patients/${patient.id}/observations/new`)}
+                  icon="observations"
+                />
+              ) : (
+                <div className="space-y-3">
+                  {observations.slice(0, 4).map(obs => (
+                    <Link
+                      key={obs.id}
+                      to={`/dashboard/observations/${obs.id}`}
+                      className="block rounded-2xl border border-slate-100 bg-slate-50 p-4 hover:border-[#1A5CFF]/30 transition-colors"
+                    >
+                      <div className="flex items-start justify-between gap-4">
+                        <div>
+                          <p className="font-semibold text-sm text-[#0B132B]">{obs.raw_text || 'Voice observation'}</p>
+                          <p className="text-xs text-slate-400 mt-1">{new Date(obs.created_at).toLocaleString()}</p>
+                        </div>
+                        <span className="px-2 py-1 rounded-full bg-slate-200 text-slate-700 text-xs font-semibold capitalize shrink-0">
+                          {obs.status}
+                        </span>
+                      </div>
+                    </Link>
+                  ))}
                 </div>
               )}
             </div>
           </div>
-          
-          <div className="bg-white rounded-[24px] border border-border p-6 shadow-sm">
-            <h3 className="font-heading text-lg font-bold text-mediq-navy mb-4">Quick Actions</h3>
-            <div className="space-y-3">
-              <Link 
-                to={`/dashboard/patients/${patient.id}/observations/new`}
-                className="w-full flex items-center gap-3 bg-background border border-border px-4 py-3 rounded-xl text-sm font-medium hover:bg-mediq-bg-blueTint hover:text-mediq-blue transition-colors group"
-              >
-                <Activity className="w-5 h-5 text-mediq-slate group-hover:text-mediq-blue transition-colors" />
-                Add Observation
-              </Link>
-              <Link 
-                to="/dashboard/handovers"
-                className="w-full flex items-center gap-3 bg-background border border-border px-4 py-3 rounded-xl text-sm font-medium hover:bg-mediq-bg-blueTint hover:text-mediq-blue transition-colors group"
-              >
-                <MessageSquareText className="w-5 h-5 text-mediq-slate group-hover:text-mediq-blue transition-colors" />
-                View Handovers
-              </Link>
-              <button 
-                onClick={handleGenerateHandover}
-                disabled={generatingHandover}
-                className="w-full flex items-center justify-between bg-mediq-blue text-white px-4 py-3 rounded-xl text-sm font-medium hover:bg-mediq-blue/90 hover:-translate-y-0.5 transition-all shadow-sm disabled:opacity-70 disabled:pointer-events-none"
-              >
-                <span className="flex items-center gap-3">
-                  <MessageSquareText className="w-5 h-5 text-white/80" />
-                  {generatingHandover ? "Generating handover..." : "Generate Handover"}
-                </span>
-              </button>
+
+          {/* Right Column Context Panel */}
+          <div className="space-y-6">
+            <div className="mediq-surface p-6 space-y-4">
+              <h2 className="font-heading text-lg font-bold text-[#0B132B]">Shift Handover Status</h2>
+              {handovers.length === 0 ? (
+                <div>
+                  <p className="text-sm text-slate-500">No shift handovers generated yet.</p>
+                  <button
+                    onClick={handleGenerateHandover}
+                    disabled={generatingHandover}
+                    className="mt-4 w-full rounded-full bg-[#1A5CFF] text-white py-2.5 text-xs font-semibold"
+                  >
+                    Generate First Handover
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="rounded-xl bg-slate-50 border border-slate-100 p-4">
+                    <p className="text-xs font-semibold text-[#1A5CFF]">Latest Handover</p>
+                    <p className="text-xs text-slate-500 mt-1">{new Date(handovers[0].created_at).toLocaleString()}</p>
+                    <p className="text-sm text-[#0B132B] mt-2 line-clamp-2">{handovers[0].summary_text}</p>
+                    <button
+                      onClick={() => setActiveTab('handovers')}
+                      className="text-xs font-semibold text-[#1A5CFF] mt-3 block"
+                    >
+                      Open Handover Detail &rarr;
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
+
+            {/* Condition Guidance Context */}
+            {guidance.length > 0 && (
+              <div className="mediq-surface p-6 space-y-3">
+                <p className="mediq-kicker">Condition Guidance</p>
+                <h3 className="font-heading text-base font-bold text-[#0B132B]">Approved Protocol Match</h3>
+                <div className="rounded-xl border border-[#1A5CFF]/20 bg-[#1A5CFF]/5 p-4">
+                  <p className="font-semibold text-sm text-[#0B132B]">{guidance[0].title}</p>
+                  <p className="text-xs text-slate-600 mt-1.5 line-clamp-3">{guidance[0].content}</p>
+                  <button
+                    onClick={() => setActiveTab('guidance')}
+                    className="text-xs font-semibold text-[#1A5CFF] mt-3 inline-block"
+                  >
+                    Read full protocol &rarr;
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
+      )}
 
-        {/* Right Column: Observation Timeline (2 cols on large) */}
-        <div className="lg:col-span-2 space-y-6">
-          <h2 className="font-heading text-xl font-bold text-mediq-navy">Recent Timeline</h2>
-          
+      {activeTab === 'observations' && (
+        <div className="space-y-4">
           {observations.length === 0 ? (
-            <div className="bg-white rounded-[24px] border border-border p-8 text-center shadow-sm">
-              <EmptyState 
-                title="No recent observations" 
-                description="No observations have been recorded for this patient yet."
-                icon={Clock}
-              />
-            </div>
+            <EmptyState
+              title="No observations for this patient yet"
+              description="Capture text notes or voice dictations for this patient."
+              actionText="Record Note"
+              onAction={() => navigate(`/dashboard/patients/${patient.id}/observations/new`)}
+              icon="observations"
+            />
           ) : (
-            <div className="space-y-4">
-              {observations.map((obs) => (
-                <ObservationItem key={obs.id} observation={obs} />
+            <div className="space-y-3">
+              {observations.map(obs => (
+                <Link
+                  key={obs.id}
+                  to={`/dashboard/observations/${obs.id}`}
+                  className="block mediq-surface p-5 hover:border-[#1A5CFF]/35 transition-colors"
+                >
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <p className="font-semibold text-[#0B132B]">{obs.raw_text || 'Voice observation'}</p>
+                      <p className="text-xs text-slate-400 mt-1">{new Date(obs.created_at).toLocaleString()}</p>
+                    </div>
+                    <div className="flex items-center gap-3 shrink-0">
+                      <span className="px-2.5 py-1 rounded-full bg-slate-100 text-xs font-semibold capitalize text-slate-600">
+                        {obs.status}
+                      </span>
+                      <MediQIcon name="arrow" size={16} className="text-[#1A5CFF]" />
+                    </div>
+                  </div>
+                </Link>
               ))}
             </div>
           )}
         </div>
-      </div>
-    </div>
-  );
-}
+      )}
 
-function ObservationItem({ observation }: { observation: Observation }) {
-  const isHighPriority = observation.priority_score >= 75;
-  const isPending = observation.status === 'pending';
-  
-  let formattedDate = 'Unknown date';
-  try {
-    formattedDate = format(new Date(observation.created_at), "MMM d, yyyy 'at' h:mm a");
-  } catch(e) {}
-
-  return (
-    <div className={cn(
-      "bg-white rounded-[20px] border p-5 shadow-sm transition-all duration-300",
-      isHighPriority ? "border-destructive/30" : "border-border",
-      "hover:shadow-md"
-    )}>
-      <div className="flex items-start justify-between mb-3">
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-semibold text-mediq-slate bg-secondary px-2.5 py-1 rounded-full flex items-center gap-1.5">
-            <Clock className="w-3.5 h-3.5" />
-            {formattedDate}
-          </span>
-          
-          {isPending && (
-            <span className="text-xs font-medium text-amber-700 bg-amber-50 px-2 py-1 rounded-full border border-amber-200">
-              Processing
-            </span>
+      {activeTab === 'handovers' && (
+        <div className="space-y-4">
+          {handovers.length === 0 ? (
+            <EmptyState
+              title="No handovers generated"
+              description="Handovers compile recent patient observations into shift summaries."
+              actionText="Generate Handover Now"
+              onAction={handleGenerateHandover}
+              icon="handovers"
+            />
+          ) : (
+            <div className="space-y-3">
+              {handovers.map(h => (
+                <Link
+                  key={h.id}
+                  to={`/dashboard/handovers/${h.id}`}
+                  className="block mediq-surface p-5 hover:border-[#1A5CFF]/35 transition-colors"
+                >
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="px-2 py-0.5 rounded-full bg-purple-50 text-purple-700 text-xs font-semibold">
+                          Shift Handover
+                        </span>
+                        <span className="text-xs text-slate-400">{new Date(h.created_at).toLocaleString()}</span>
+                      </div>
+                      <p className="font-semibold text-sm text-[#0B132B] mt-2">{h.summary_text}</p>
+                    </div>
+                    <span className={`px-2.5 py-1 rounded-full text-xs font-semibold shrink-0 ${h.acknowledged_by ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>
+                      {h.acknowledged_by ? 'Acknowledged' : 'Needs Review'}
+                    </span>
+                  </div>
+                </Link>
+              ))}
+            </div>
           )}
         </div>
-        
-        <div className="flex items-center gap-2">
-          {observation.priority_score > 0 && (
-            <PriorityBadge score={observation.priority_score} className="scale-90 origin-left" />
-          )}
-          {isHighPriority && (
-            <span className="flex items-center gap-1 text-xs font-bold text-destructive bg-destructive/10 px-2.5 py-1 rounded-full">
-              <ShieldAlert className="w-3.5 h-3.5" />
-              High Priority
-            </span>
-          )}
-          {!isHighPriority && observation.status === 'confirmed' && (
-            <span className="flex items-center gap-1 text-xs font-medium text-mediq-success bg-mediq-success/10 px-2.5 py-1 rounded-full">
-              <BadgeCheck className="w-3.5 h-3.5" />
-              Logged
-            </span>
-          )}
-        </div>
-      </div>
+      )}
 
-      <p className="text-foreground text-sm leading-relaxed whitespace-pre-wrap">
-        {observation.raw_text}
-      </p>
-
-      {/* Extracted Metadata (Only display safely extracted structured fields) */}
-      {observation.extracted_metadata && Object.keys(observation.extracted_metadata).length > 0 && (
-        <div className="mt-4 pt-4 border-t border-border flex flex-wrap gap-2">
-          {observation.extracted_metadata.symptoms?.map((sym: string, i: number) => (
-            <span key={`sym-${i}`} className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-red-50 text-red-700 border border-red-100">
-              {sym}
-            </span>
-          ))}
-          {observation.extracted_metadata.category && (
-            <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-mediq-bg-blueTint text-mediq-blue border border-mediq-blue/10">
-              {observation.extracted_metadata.category}
-            </span>
+      {activeTab === 'guidance' && (
+        <div className="space-y-4">
+          {guidance.length === 0 ? (
+            <EmptyState
+              title="No condition guidance loaded"
+              description="Search the clinical guidance library for condition protocols."
+              actionText="Open Guidance Search"
+              actionLink="/dashboard/guidance"
+              icon="guidance"
+            />
+          ) : (
+            <div className="space-y-4">
+              {guidance.map(g => (
+                <div key={g.id} className="mediq-surface p-6 space-y-3">
+                  <span className="px-2.5 py-1 rounded-full bg-slate-100 text-slate-600 text-xs font-semibold">
+                    {g.category}
+                  </span>
+                  <h3 className="font-heading text-lg font-bold text-[#0B132B]">{g.title}</h3>
+                  <p className="text-sm text-slate-600 leading-relaxed whitespace-pre-wrap">{g.content}</p>
+                </div>
+              ))}
+            </div>
           )}
         </div>
       )}

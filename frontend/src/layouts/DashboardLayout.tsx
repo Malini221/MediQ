@@ -18,13 +18,14 @@ const baseNavigation = [
 ];
 
 export default function DashboardLayout() {
-  const { signOut, user } = useAuth();
+  const { signOut, user, role: contextRole } = useAuth();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const location = useLocation();
-  const role = user?.user_metadata?.system_role || 'caregiver';
+  const role = contextRole || user?.user_metadata?.system_role || 'caregiver';
   const navigation = role === 'patient' ? [
-    { name: 'My space', to: '/dashboard/patient', icon: 'overview' as const },
+    { name: 'Home', to: '/dashboard/patient', icon: 'overview' as const },
     { name: 'My reports', to: '/dashboard/reports', icon: 'reports' as const },
+    { name: 'Guidance', to: '/dashboard/guidance', icon: 'guidance' as const },
     { name: 'Notifications', to: '/dashboard/notifications', icon: 'notifications' as const },
     { name: 'Settings', to: '/dashboard/settings', icon: 'settings' as const },
   ] : baseNavigation;

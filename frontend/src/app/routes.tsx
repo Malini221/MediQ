@@ -1,4 +1,4 @@
-import { createBrowserRouter } from 'react-router-dom';
+import { createBrowserRouter, Navigate } from 'react-router-dom';
 import { ProtectedRoute } from '../components/ProtectedRoute';
 import DashboardLayout from '../layouts/DashboardLayout';
 import { Overview } from '../pages/Overview';
@@ -7,6 +7,8 @@ import { PatientDetail } from '../pages/PatientDetail';
 import { NewObservation } from '../pages/NewObservation';
 import { ObservationDetail } from '../pages/ObservationDetail';
 import { AuthPage } from '../pages/AuthPage';
+import { PatientAuthPage } from '../pages/PatientAuthPage';
+import { LandingPage } from '../pages/LandingPage';
 import { Handovers } from '../pages/Handovers';
 import { HandoverDetail } from '../pages/HandoverDetail';
 import { ClinicalGuidance } from '../pages/ClinicalGuidance';
@@ -28,8 +30,9 @@ export const router = createBrowserRouter([
     errorElement: <RouteErrorBoundary />,
     element: <PublicRoute />,
     children: [
-      { path: '/', element: <AuthPage initialMode="signin" /> },
-      { path: '/signup', element: <AuthPage initialMode="register" /> },
+      { index: true, element: <LandingPage /> },
+      { path: '/auth/caregiver', element: <AuthPage initialMode="signin" /> },
+      { path: '/auth/patient', element: <PatientAuthPage initialMode="signin" /> },
     ]
   },
   {
@@ -40,6 +43,10 @@ export const router = createBrowserRouter([
         path: '/dashboard',
         element: <DashboardLayout />,
         children: [
+          {
+            index: true,
+            element: <Navigate to="/dashboard/overview" replace />,
+          },
           {
             path: 'overview',
             element: <Overview />,
