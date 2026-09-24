@@ -10,26 +10,21 @@ app = FastAPI(
     version="0.1.0",
 )
 
-# Configure CORS.
-# Keep explicit production/frontend origins, while allowing Vite's localhost/127.0.0.1
-# development ports so local testing does not fail on an OPTIONS preflight.
-origins = [
-    "http://localhost:5173",
-    "http://localhost:4173",
-    "http://localhost:3000",
-    "http://127.0.0.1:5173",
-    "http://127.0.0.1:4173",
-    "http://127.0.0.1:3000",
-]
-
-if getattr(settings, "FRONTEND_URL", None):
-    origins.append(settings.FRONTEND_URL)
+# Local Vite ports can change (5173, 5174, etc.). During development we allow
+# localhost/127.0.0.1 origins and all request headers/methods so Authorization
+# bearer tokens can pass the browser's CORS preflight. Production remains explicit.
+if settings.ENVIRONMENT == "development":
+    cors_origins = ["*"]
+    cors_allow_credentials = False
+else:
+    cors_origins = [settings.FRONTEND_URL] if settings.FRONTEND_URL else []
+    cors_allow_credentials = True
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
-    allow_credentials=True,
+    allow_origins=cors_origins,
+    allow_origin_regex=r"^https?://(localhost|127\\.0\\.0\\.1)(:\\d+)?$" if settings.ENVIRONMENT == "development" else None,
+    allow_credentials=cors_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
