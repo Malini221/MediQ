@@ -9,56 +9,101 @@ from uuid import UUID
 
 router = APIRouter()
 
+CAREGIVER_ROLES = {"family_caregiver", "professional_caregiver", "clinician", "coordinator"}
+
+
 def get_user_supabase_client(credentials: HTTPAuthorizationCredentials = Depends(security)):
     """
-    Returns a configured Supabase Client that inherits the user's JWT.
-    This ensures that Row Level Security (RLS) is automatically enforced 
-    at the database layer for all operations without duplicating policies.
+    Returns a Supabase client carrying the signed-in user's JWT so RLS remains
+    the final authorization layer for normal data access.
     """
     if not credentials:
         raise HTTPException(status_code=401, detail="Unauthorized")
-    
-    # By passing the Authorization header directly into PostgREST via ClientOptions,
-    # the remote Postgres instance will strictly apply the user's RLS context.
+
     options = ClientOptions(headers={"Authorization": f"Bearer {credentials.credentials}"})
     return create_client(settings.SUPABASE_URL, settings.SUPABASE_ANON_KEY, options=options)
 
+
+def ensure_demo_caregiver_access(user_id: str) -> None:
+    """
+    Development/demo bootstrap only.
+
+    The current prototype does not yet have a coordinator assignment UI. When a
+    verified caregiver account reaches the patient API, make sure that account
+    has memberships for the synthetic demo patients. The actual data query still
+    uses the user's JWT/RLS client after this bootstrap step.
+
+    Production deployments should replace this with explicit coordinator-driven
+    membership assignment and set ENVIRONMENT=production.
+    """
+    if settings.ENVIRONMENT != "development":
+        return
+
+    try:
+        admin = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
+        profile_resp = admin.table("profiles").select("system_role").eq("id", user_id).maybe_single().execute()
+        role = (profile_resp.data or {}).get("system_role") if profile_resp and profile_resp.data else None
+
+        # Existing caregiver accounts may predate profile creation. Fall back to
+        # verified Auth metadata on the server for local/demo bootstrapping.
+        if role not in CAREGIVER_ROLES:
+            auth_user = admin.auth.admin.get_user_by_id(user_id)
+            role = ((auth_user.user.user_metadata or {}).get("system_role") if auth_user and auth_user.user else None)
+
+        if role not in CAREGIVER_ROLES:
+            return
+
+        # Keep the public profile in sync for the current account.
+        full_name = ((auth_user.user.user_metadata or {}).get("full_name") if 'auth_user' in locals() and auth_user and auth_user.user else None) or "MediQ Caregiver"
+        admin.table("profiles").upsert({
+            "id": user_id,
+            "full_name": full_name,
+            "system_role": role,
+        }).execute()
+
+        patients_resp = admin.table("patients").select("id").execute()
+        for patient in patients_resp.data or []:
+            admin.table("patient_memberships").upsert({
+                "user_id": user_id,
+                "patient_id": patient["id"],
+                "assigned_role": role,
+            }, on_conflict="user_id,patient_id").execute()
+    except Exception:
+        # Never turn a dashboard request into a 500 just because demo bootstrap
+        # could not run. RLS will still enforce the normal access boundary.
+        return
+
+
 @router.get("", response_model=list[PatientResponse])
 async def get_patients(
-    user_id: str = Depends(get_current_user), 
-    client = Depends(get_user_supabase_client)
+    user_id: str = Depends(get_current_user),
+    client=Depends(get_user_supabase_client),
 ):
-    """
-    Retrieve all patients the authenticated user is allowed to access.
-    RLS inherently filters the returned rows based on `patient_memberships`.
-    """
+    """Retrieve only patients the authenticated user is allowed to access."""
+    ensure_demo_caregiver_access(user_id)
     try:
-        response = client.table("patients").select("*").execute()
+        response = client.table("patients").select("*").order("full_name").execute()
         return response.data
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Unable to load patients") from e
+
 
 @router.get("/{patient_id}", response_model=PatientResponse)
 async def get_patient(
-    patient_id: UUID, 
-    user_id: str = Depends(get_current_user), 
-    client = Depends(get_user_supabase_client)
+    patient_id: UUID,
+    user_id: str = Depends(get_current_user),
+    client=Depends(get_user_supabase_client),
 ):
-    """
-    Retrieve a specific patient by ID.
-    If the user has no membership, RLS denies access, causing the result to be empty.
-    We return 404 to avoid leaking the existence of unauthorized patients.
-    """
+    ensure_demo_caregiver_access(user_id)
     try:
         response = client.table("patients").select("*").eq("id", str(patient_id)).execute()
         if not response.data:
-            # Enforce Patient Isolation - return 404 (Not Found) if unauthorized
             raise HTTPException(status_code=404, detail="Patient not found or unauthorized")
         return response.data[0]
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Unable to load patient") from e
 
 
 @router.patch("/{patient_id}", response_model=PatientResponse)
@@ -66,9 +111,10 @@ async def update_patient(
     patient_id: UUID,
     payload: dict,
     user_id: str = Depends(get_current_user),
-    client = Depends(get_user_supabase_client)
+    client=Depends(get_user_supabase_client),
 ):
-    """Update condition/profile fields for an authorized patient membership."""
+    """Update supported condition/profile fields for an authorized patient."""
+    ensure_demo_caregiver_access(user_id)
     allowed = {}
     if "primary_diagnosis" in payload and isinstance(payload["primary_diagnosis"], str):
         allowed["primary_diagnosis"] = payload["primary_diagnosis"].strip()
@@ -86,93 +132,88 @@ async def update_patient(
     except Exception as e:
         raise HTTPException(status_code=403, detail="Patient update is not permitted") from e
 
+
 @router.get("/{patient_id}/observations", response_model=list[ObservationResponse])
 async def get_patient_observations(
     patient_id: UUID,
     user_id: str = Depends(get_current_user),
-    client = Depends(get_user_supabase_client)
+    client=Depends(get_user_supabase_client),
 ):
-    """
-    Retrieve all observations for a specific patient.
-    """
+    ensure_demo_caregiver_access(user_id)
     try:
-        # First verify the patient is accessible
         patient_check = client.table("patients").select("id, primary_diagnosis").eq("id", str(patient_id)).execute()
         if not patient_check.data:
             raise HTTPException(status_code=404, detail="Patient not found or unauthorized")
-            
-        response = client.table("observations").select("*").eq("patient_id", str(patient_id)).execute()
+        response = client.table("observations").select("*").eq("patient_id", str(patient_id)).order("created_at", desc=True).execute()
         return response.data
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Unable to load patient observations") from e
+
 
 from app.schemas.handover import HandoverResponse
 from app.ai import handover_generation
+
 
 @router.post("/{patient_id}/handover", response_model=HandoverResponse, status_code=status.HTTP_201_CREATED)
 async def create_patient_handover(
     patient_id: UUID,
     user_id: str = Depends(get_current_user),
-    client = Depends(get_user_supabase_client)
+    client=Depends(get_user_supabase_client),
 ):
+    ensure_demo_caregiver_access(user_id)
     try:
-        # 1. Authorize patient
         patient_check = client.table("patients").select("id, primary_diagnosis").eq("id", str(patient_id)).execute()
         if not patient_check.data:
             raise HTTPException(status_code=404, detail="Patient not found or unauthorized")
-            
-        # 2. Retrieve recent observations
-        obs_resp = client.table("observations").select("*").eq("patient_id", str(patient_id)).eq("status", "pending").execute()
+
+        obs_resp = client.table("observations").select("*").eq("patient_id", str(patient_id)).order("created_at", desc=True).limit(20).execute()
         observations = obs_resp.data
-        
         if not observations:
             raise HTTPException(status_code=400, detail="No observations available to generate handover")
-            
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-        
-    # 3. Generate Handover Summary
-    handover_data = handover_generation.generate_handover_summary(observations, patient_check.data[0].get("primary_diagnosis"))
-    
-    # 4. Store in DB
+        raise HTTPException(status_code=500, detail="Unable to prepare handover") from e
+
+    handover_data = handover_generation.generate_handover_summary(
+        observations,
+        patient_check.data[0].get("primary_diagnosis"),
+    )
+
     try:
         insert_data = {
             "patient_id": str(patient_id),
             "created_by": user_id,
             "summary_text": handover_data["summary_text"],
             "source_observation_ids": handover_data["source_observation_ids"],
-            "priority_watch_items": handover_data["priority_watch_items"]
+            "priority_watch_items": handover_data["priority_watch_items"],
         }
-        
         insert_resp = client.table("handover_summaries").insert(insert_data).execute()
         if not insert_resp.data:
             raise HTTPException(status_code=403, detail="Failed to create handover summary")
-            
         return insert_resp.data[0]
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Unable to save handover summary") from e
+
 
 @router.get("/{patient_id}/handovers", response_model=list[HandoverResponse])
 async def get_patient_handovers(
     patient_id: UUID,
     user_id: str = Depends(get_current_user),
-    client = Depends(get_user_supabase_client)
+    client=Depends(get_user_supabase_client),
 ):
+    ensure_demo_caregiver_access(user_id)
     try:
         patient_check = client.table("patients").select("id").eq("id", str(patient_id)).execute()
         if not patient_check.data:
             raise HTTPException(status_code=404, detail="Patient not found or unauthorized")
-            
-        response = client.table("handover_summaries").select("*").eq("patient_id", str(patient_id)).execute()
+        response = client.table("handover_summaries").select("*").eq("patient_id", str(patient_id)).order("created_at", desc=True).execute()
         return response.data
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
+        raise HTTPException(status_code=500, detail="Unable to load handovers") from e
