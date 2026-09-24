@@ -2,7 +2,7 @@ import { Navigate, Outlet } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 
 export function PublicRoute() {
-  const { session, loading } = useAuth();
+  const { session, role, loading } = useAuth();
 
   if (loading) {
     return (
@@ -14,11 +14,19 @@ export function PublicRoute() {
     );
   }
 
-  if (session) {
-    // Redirect authenticated users to the dashboard instead of letting them see Login/Signup
+  if (session && role) {
+    if (window.location.pathname === '/auth/patient' && role !== 'patient') {
+      // Allow PatientAuthPage to remain mounted so it can display the error message and sign the user out
+      return <Outlet />;
+    }
+    
+    // Redirect authenticated users to their respective dashboards
+    if (role === 'patient') {
+      return <Navigate to="/dashboard/patient" replace />;
+    }
     return <Navigate to="/dashboard/overview" replace />;
   }
 
-  // Render child routes (Login/Signup)
+  // Render child routes (Login/Signup/Landing)
   return <Outlet />;
 }
