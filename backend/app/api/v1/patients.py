@@ -13,10 +13,7 @@ CAREGIVER_ROLES = {"family_caregiver", "professional_caregiver", "clinician", "c
 
 
 def get_user_supabase_client(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    """
-    Returns a Supabase client carrying the signed-in user's JWT so RLS remains
-    the final authorization layer for normal data access.
-    """
+    """Return a Supabase client carrying the signed-in user's JWT so RLS remains authoritative."""
     if not credentials:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
@@ -28,33 +25,32 @@ def ensure_demo_caregiver_access(user_id: str) -> None:
     """
     Development/demo bootstrap only.
 
-    The current prototype does not yet have a coordinator assignment UI. When a
-    verified caregiver account reaches the patient API, make sure that account
-    has memberships for the synthetic demo patients. The actual data query still
-    uses the user's JWT/RLS client after this bootstrap step.
-
-    Production deployments should replace this with explicit coordinator-driven
-    membership assignment and set ENVIRONMENT=production.
+    The prototype does not yet have a coordinator assignment UI. When a verified
+    caregiver account reaches the patient API, give that account memberships to
+    the synthetic demo patients. The actual data query still uses the user's JWT
+    and RLS client. Production should replace this with explicit assignments.
     """
     if settings.ENVIRONMENT != "development":
         return
 
     try:
         admin = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
-        profile_resp = admin.table("profiles").select("system_role").eq("id", user_id).maybe_single().execute()
-        role = (profile_resp.data or {}).get("system_role") if profile_resp and profile_resp.data else None
+        profile_resp = admin.table("profiles").select("system_role, full_name").eq("id", user_id).maybe_single().execute()
+        profile = profile_resp.data if profile_resp else None
 
-        # Existing caregiver accounts may predate profile creation. Fall back to
-        # verified Auth metadata on the server for local/demo bootstrapping.
-        if role not in CAREGIVER_ROLES:
+        # A real profile is authoritative. Only accounts created before profile
+        # provisioning fall back to verified Auth metadata.
+        if profile:
+            role = profile.get("system_role")
+            full_name = profile.get("full_name") or "MediQ Caregiver"
+        else:
             auth_user = admin.auth.admin.get_user_by_id(user_id)
             role = ((auth_user.user.user_metadata or {}).get("system_role") if auth_user and auth_user.user else None)
+            full_name = ((auth_user.user.user_metadata or {}).get("full_name") if auth_user and auth_user.user else None) or "MediQ Caregiver"
 
         if role not in CAREGIVER_ROLES:
             return
 
-        # Keep the public profile in sync for the current account.
-        full_name = ((auth_user.user.user_metadata or {}).get("full_name") if 'auth_user' in locals() and auth_user and auth_user.user else None) or "MediQ Caregiver"
         admin.table("profiles").upsert({
             "id": user_id,
             "full_name": full_name,
@@ -69,8 +65,8 @@ def ensure_demo_caregiver_access(user_id: str) -> None:
                 "assigned_role": role,
             }, on_conflict="user_id,patient_id").execute()
     except Exception:
-        # Never turn a dashboard request into a 500 just because demo bootstrap
-        # could not run. RLS will still enforce the normal access boundary.
+        # A bootstrap failure must never turn the dashboard into a 500. Normal
+        # RLS access continues to be enforced by the user-scoped client.
         return
 
 
@@ -79,7 +75,6 @@ async def get_patients(
     user_id: str = Depends(get_current_user),
     client=Depends(get_user_supabase_client),
 ):
-    """Retrieve only patients the authenticated user is allowed to access."""
     ensure_demo_caregiver_access(user_id)
     try:
         response = client.table("patients").select("*").order("full_name").execute()
@@ -113,7 +108,6 @@ async def update_patient(
     user_id: str = Depends(get_current_user),
     client=Depends(get_user_supabase_client),
 ):
-    """Update supported condition/profile fields for an authorized patient."""
     ensure_demo_caregiver_access(user_id)
     allowed = {}
     if "primary_diagnosis" in payload and isinstance(payload["primary_diagnosis"], str):
