@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../services/supabase';
+import { observationService } from '../services/observations';
 import { MediQIcon } from '../components/common/MediQIcon';
 import { LoadingState } from '../components/ui/states';
 
@@ -17,6 +18,7 @@ export function PatientDashboard() {
   const [handovers, setHandovers] = useState<Handover[]>([]);
   const [careTeam, setCareTeam] = useState<CareTeamMember[]>([]);
   const [feeling, setFeeling] = useState<string | null>(localStorage.getItem('mediq_patient_feeling_today'));
+  const [feelingSubmitting, setFeelingSubmitting] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -70,9 +72,19 @@ export function PatientDashboard() {
     loadPatientDashboard();
   }, [user]);
 
-  const handleFeelingSelect = (status: string) => {
+  const handleFeelingSelect = async (status: string) => {
     setFeeling(status);
     localStorage.setItem('mediq_patient_feeling_today', status);
+    if (!patient || feelingSubmitting) return;
+    setFeelingSubmitting(true);
+    try {
+      await observationService.createObservation(patient.id, `[Patient Feeling Check-in] ${status}`);
+    } catch (err) {
+      console.error('Feeling check-in submission failed:', err);
+      setError('Your check-in could not reach your care team. You can retry from My Reports.');
+    } finally {
+      setFeelingSubmitting(false);
+    }
   };
 
   const getTimeGreeting = () => {
@@ -110,10 +122,10 @@ export function PatientDashboard() {
         <div><h2 className="font-heading text-lg font-bold text-[#0B132B]">How are you feeling today?</h2><p className="text-xs text-slate-500 mt-1">A quick check-in signal for your care team.</p></div>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           {[{ id: 'Good', label: 'Good 😊', color: 'border-emerald-200 bg-emerald-50/50 text-emerald-700' }, { id: 'Okay', label: 'Okay 🙂', color: 'border-blue-200 bg-blue-50/50 text-blue-700' }, { id: 'Not Great', label: 'Not Great 🙁', color: 'border-amber-200 bg-amber-50/50 text-amber-700' }, { id: 'Uncomfortable', label: 'Uncomfortable 😣', color: 'border-red-200 bg-red-50/50 text-red-700' }].map(item => (
-            <button key={item.id} onClick={() => handleFeelingSelect(item.id)} className={`p-4 rounded-2xl border text-center transition-all ${feeling === item.id ? 'border-[#1A5CFF] bg-[#1A5CFF]/10 font-bold text-[#1A5CFF] ring-2 ring-[#1A5CFF]/30' : `${item.color} hover:border-[#1A5CFF]/30`}`}><p className="text-sm font-semibold">{item.label}</p></button>
+            <button key={item.id} disabled={feelingSubmitting} onClick={() => handleFeelingSelect(item.id)} className={`p-4 rounded-2xl border text-center transition-all disabled:opacity-60 ${feeling === item.id ? 'border-[#1A5CFF] bg-[#1A5CFF]/10 font-bold text-[#1A5CFF] ring-2 ring-[#1A5CFF]/30' : `${item.color} hover:border-[#1A5CFF]/30`}`}><p className="text-sm font-semibold">{item.label}</p></button>
           ))}
         </div>
-        {feeling && <p className="text-xs text-emerald-600 font-medium">✓ Check-in saved for today ({feeling}).</p>}
+        {feeling && <p className="text-xs text-emerald-600 font-medium">✓ Check-in saved and shared with your care team ({feeling}).</p>}
       </section>
 
       <section className="grid grid-cols-1 lg:grid-cols-2 gap-6">
