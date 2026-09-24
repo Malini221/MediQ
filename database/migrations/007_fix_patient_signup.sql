@@ -85,5 +85,7 @@ CREATE TRIGGER on_auth_user_created
   AFTER INSERT ON auth.users
   FOR EACH ROW EXECUTE PROCEDURE public.handle_new_user();
 
+REVOKE EXECUTE ON FUNCTION public.handle_new_user() FROM anon, authenticated;
+
 COMMENT ON COLUMN public.patients.date_of_birth IS
   'Optional during self-service patient registration; may be completed later in the patient profile.';
