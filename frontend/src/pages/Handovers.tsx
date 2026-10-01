@@ -3,144 +3,188 @@ import { Link } from 'react-router-dom';
 import { handoversService } from '../services/handovers';
 import { patientService } from '../services/patients';
 import { Handover, Patient } from '../types/models';
-import { LoadingState, ErrorState, EmptyState } from '../components/ui/states';
-import { Clock, CheckCircle2, AlertCircle, Calendar, FileText, ChevronRight } from '@/components/common/Icon';
-import { format } from 'date-fns';
+import { ErrorState, EmptyState, SkeletonList } from '../components/ui/states';
+import { MediQIcon } from '../components/common/MediQIcon';
 
 interface HandoverWithPatient extends Handover {
   patient: Patient;
 }
 
+type HandoverTab = 'all' | 'needs_review' | 'acknowledged';
+
 export function Handovers() {
   const [handovers, setHandovers] = useState<HandoverWithPatient[]>([]);
+  const [patients, setPatients] = useState<Patient[]>([]);
+  const [selectedPatient, setSelectedPatient] = useState('all');
+  const [activeTab, setActiveTab] = useState<HandoverTab>('all');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    async function loadHandovers() {
-      try {
-        setLoading(true);
-        // 1. Get all accessible patients
-        const patients = await patientService.getPatients();
-        
-        // 2. Fetch handovers for all patients
-        const handoverPromises = patients.map(async (patient: Patient) => {
-          try {
-            const patientHandovers = await handoversService.getPatientHandovers(patient.id);
-            return patientHandovers.map(h => ({ ...h, patient }));
-          } catch (e) {
-            console.error(`Failed to load handovers for patient ${patient.id}`, e);
-            return []; // Skip if error fetching for one patient
-          }
-        });
-        
-        const results = await Promise.all(handoverPromises);
-        const allHandovers = results.flat();
-        
-        // Sort by created_at descending
-        allHandovers.sort((a: HandoverWithPatient, b: HandoverWithPatient) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-        
-        setHandovers(allHandovers);
-      } catch (err) {
-        setError('Failed to load handovers.');
-        console.error(err);
-      } finally {
-        setLoading(false);
-      }
+  const loadHandovers = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      const pts = await patientService.getPatients();
+      setPatients(pts);
+
+      const promises = pts.map(async (p: Patient) => {
+        try {
+          const list = await handoversService.getPatientHandovers(p.id);
+          return list.map(h => ({ ...h, patient: p }));
+        } catch {
+          return [];
+        }
+      });
+
+      const results = await Promise.all(promises);
+      const all = results.flat().sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at));
+      setHandovers(all);
+    } catch (err: any) {
+      console.error('Failed to load handovers:', err);
+      setError('Unable to load shift handovers.');
+    } finally {
+      setLoading(false);
     }
-    
+  };
+
+  useEffect(() => {
     loadHandovers();
   }, []);
 
-  if (loading) {
-    return <LoadingState message="Loading handovers..." />;
-  }
-
-  if (error) {
-    return <ErrorState message={error} onRetry={() => window.location.reload()} />;
-  }
-
-  if (handovers.length === 0) {
-    return (
-      <EmptyState
-        icon={FileText}
-        title="No handovers yet"
-        description="Generate a handover from the patient's recent observations."
-      />
-    );
-  }
+  const filteredHandovers = handovers.filter(h => {
+    const matchesPatient = selectedPatient === 'all' || h.patient_id === selectedPatient;
+    const matchesTab =
+      activeTab === 'all' ||
+      (activeTab === 'needs_review' && !h.acknowledged_by) ||
+      (activeTab === 'acknowledged' && !!h.acknowledged_by);
+    return matchesPatient && matchesTab;
+  });
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight text-foreground font-display">Handovers</h1>
-        <p className="text-muted-foreground mt-1">Shift summaries and important watch items.</p>
-      </div>
+    <div className="space-y-6 mediq-reveal pb-10">
+      <section className="mediq-surface p-6 md:p-8 flex flex-col md:flex-row md:items-end justify-between gap-6">
+        <div>
+          <p className="mediq-kicker">Shift Continuity Workspace</p>
+          <h1 className="font-heading text-3xl md:text-4xl font-bold tracking-tight mt-1 text-[#0B132B]">
+            Shift Handovers
+          </h1>
+          <p className="text-slate-500 mt-2 text-sm max-w-xl">
+            Review incoming/outgoing shift continuity summaries, watch items, and safety flags without losing state.
+          </p>
+        </div>
 
-      <div className="grid gap-4">
-        {handovers.map((handover) => (
+        {patients.length > 0 && (
           <Link
-            key={handover.id}
-            to={`/dashboard/handovers/${handover.id}`}
-            className="block group"
+            to={`/dashboard/patients/${patients[0].id}`}
+            className="inline-flex items-center gap-2 rounded-full bg-[#1A5CFF] text-white px-5 py-3 text-sm font-semibold hover:opacity-95 transition-opacity shrink-0"
           >
-            <div className="bg-card border border-border rounded-2xl p-5 shadow-sm group-hover:-translate-y-1 group-hover:shadow-md transition-all duration-300">
-              <div className="flex items-start justify-between">
-                <div>
-                  <h3 className="font-semibold text-lg text-foreground group-hover:text-mediq-blue transition-colors">
-                    {handover.patient.full_name}
-                  </h3>
-                  <div className="flex items-center gap-4 mt-2 text-sm text-muted-foreground">
-                    <span className="flex items-center gap-1.5">
-                      <Calendar className="w-4 h-4" />
-                      {format(new Date(handover.created_at), "MMM d, yyyy")}
-                    </span>
-                    <span className="flex items-center gap-1.5">
-                      <Clock className="w-4 h-4" />
-                      {format(new Date(handover.created_at), "h:mm a")}
-                    </span>
-                  </div>
-                </div>
-                
-                <div className="flex flex-col items-end gap-2">
-                  {handover.acknowledged_by ? (
-                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-mediq-success/10 text-mediq-success">
-                      <CheckCircle2 className="w-3.5 h-3.5" />
-                      Acknowledged
-                    </span>
-                  ) : (
-                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-50 text-amber-700">
-                      <AlertCircle className="w-3.5 h-3.5" />
-                      Needs Review
-                    </span>
-                  )}
-                  
-                  <div className="p-1.5 rounded-full bg-secondary text-muted-foreground group-hover:bg-mediq-blue group-hover:text-white transition-colors">
-                    <ChevronRight className="w-4 h-4" />
-                  </div>
-                </div>
-              </div>
-              
-              {/* Preview */}
-              <div className="mt-4 pt-4 border-t border-border/50">
-                <p className="text-sm text-foreground/80 line-clamp-2">
-                  {handover.summary_text}
-                </p>
-                <div className="mt-3 flex items-center gap-3">
-                  <span className="text-xs font-medium px-2 py-1 bg-secondary rounded-md text-muted-foreground">
-                    {handover.source_observation_ids.length} Observations
-                  </span>
-                  {handover.priority_watch_items?.safety_flags?.length > 0 && (
-                    <span className="text-xs font-medium px-2 py-1 bg-destructive/10 rounded-md text-destructive">
-                      Safety Flags Active
-                    </span>
-                  )}
-                </div>
-              </div>
-            </div>
+            <MediQIcon name="plus" size={17} />
+            Generate Shift Handover
           </Link>
-        ))}
-      </div>
+        )}
+      </section>
+
+      {/* Filter Tabs & Patient Selector */}
+      <section className="mediq-surface p-4 md:p-5 flex flex-col sm:flex-row items-center justify-between gap-4">
+        <div className="flex gap-1.5 w-full sm:w-auto overflow-x-auto">
+          {(['all', 'needs_review', 'acknowledged'] as HandoverTab[]).map(t => (
+            <button
+              key={t}
+              onClick={() => setActiveTab(t)}
+              className={`px-4 py-2 rounded-xl text-xs font-semibold uppercase tracking-wider transition-all whitespace-nowrap ${
+                activeTab === t
+                  ? 'bg-[#1A5CFF] text-white'
+                  : 'bg-slate-100 text-slate-600 hover:text-[#0B132B]'
+              }`}
+            >
+              {t === 'all' ? 'All Handovers' : t === 'needs_review' ? 'Needs Review' : 'Acknowledged'}
+            </button>
+          ))}
+        </div>
+
+        {patients.length > 0 && (
+          <select
+            value={selectedPatient}
+            onChange={e => setSelectedPatient(e.target.value)}
+            className="w-full sm:w-64 rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-xs font-semibold mediq-focus"
+          >
+            <option value="all">All Assigned Patients</option>
+            {patients.map(p => (
+              <option key={p.id} value={p.id}>{p.full_name}</option>
+            ))}
+          </select>
+        )}
+      </section>
+
+      {/* Content Area */}
+      {loading ? (
+        <div className="mediq-surface p-6">
+          <SkeletonList count={3} />
+        </div>
+      ) : error ? (
+        <ErrorState title="Handover Error" message={error} onRetry={loadHandovers} />
+      ) : filteredHandovers.length === 0 ? (
+        <EmptyState
+          title={activeTab !== 'all' || selectedPatient !== 'all' ? 'No matching handovers' : 'No shift handovers yet'}
+          description={
+            activeTab !== 'all' || selectedPatient !== 'all'
+              ? 'Try changing your filter settings.'
+              : 'Generate a shift handover from an authorized patient profile workspace.'
+          }
+          icon="handovers"
+        />
+      ) : (
+        <div className="space-y-4">
+          {filteredHandovers.map(h => (
+            <Link
+              key={h.id}
+              to={`/dashboard/handovers/${h.id}`}
+              className="block mediq-surface p-6 hover:border-[#1A5CFF]/35 transition-all group"
+            >
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-100">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-[#1A5CFF] uppercase tracking-wider">{h.patient.full_name}</span>
+                    <span className="text-xs text-slate-400">• {new Date(h.created_at).toLocaleString()}</span>
+                  </div>
+                  <h3 className="font-heading text-lg font-bold text-[#0B132B] mt-1 group-hover:text-[#1A5CFF] transition-colors">
+                    Shift Handover Summary
+                  </h3>
+                </div>
+
+                <div className="flex items-center gap-3">
+                  <span
+                    className={`px-3 py-1 rounded-full text-xs font-semibold ${
+                      h.acknowledged_by
+                        ? 'bg-emerald-50 text-emerald-700 border border-emerald-200/60'
+                        : 'bg-amber-50 text-amber-700 border border-amber-200/60'
+                    }`}
+                  >
+                    {h.acknowledged_by ? 'Acknowledged' : 'Needs Review'}
+                  </span>
+                  <MediQIcon name="arrow" size={18} className="text-[#1A5CFF]" />
+                </div>
+              </div>
+
+              {/* SBAR & Summary Preview */}
+              <div className="mt-4 space-y-3">
+                <p className="text-sm text-slate-600 line-clamp-2 leading-relaxed">{h.summary_text}</p>
+
+                <div className="flex flex-wrap items-center gap-2 pt-2">
+                  <span className="px-2.5 py-1 rounded-lg bg-slate-100 text-slate-600 text-xs font-semibold">
+                    {h.source_observation_ids?.length || 0} Observations Compiled
+                  </span>
+                  {h.priority_watch_items?.safety_flags && h.priority_watch_items.safety_flags.length > 0 && (
+                    <span className="px-2.5 py-1 rounded-lg bg-red-50 text-red-700 text-xs font-semibold border border-red-100">
+                      Safety Flags Active ({h.priority_watch_items.safety_flags.length})
+                    </span>
+                  )}
+                </div>
+              </div>
+            </Link>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

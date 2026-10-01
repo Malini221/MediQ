@@ -1,8 +1,9 @@
-import { Navigate, Outlet } from 'react-router-dom';
+import { Navigate, Outlet, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 
 export function ProtectedRoute() {
-  const { session, loading } = useAuth();
+  const { session, role, loading } = useAuth();
+  const location = useLocation();
 
   if (loading) {
     return (
@@ -18,6 +19,17 @@ export function ProtectedRoute() {
   if (!session) {
     // Redirect to login if unauthenticated
     return <Navigate to="/" replace />;
+  }
+
+  // Role-Based Isolation Guard
+  const isPatientRoute = location.pathname.startsWith('/dashboard/patient') || location.pathname.startsWith('/dashboard/reports');
+  
+  if (role === 'patient' && !isPatientRoute && !location.pathname.startsWith('/dashboard/settings') && !location.pathname.startsWith('/dashboard/notifications') && !location.pathname.startsWith('/dashboard/guidance')) {
+    return <Navigate to="/dashboard/patient" replace />;
+  }
+
+  if (role !== 'patient' && isPatientRoute) {
+    return <Navigate to="/dashboard/overview" replace />;
   }
 
   // Render child routes

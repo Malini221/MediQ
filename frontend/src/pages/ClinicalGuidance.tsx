@@ -1,8 +1,16 @@
 import { useState } from 'react';
 import { clinicalGuidanceService } from '../services/clinicalGuidance';
 import { ClinicalGuidanceResult } from '../types/models';
-import { Search, BookOpen, AlertCircle, Sparkles } from '@/components/common/Icon';
-import { cn } from '../lib/utils';
+import { MediQIcon } from '../components/common/MediQIcon';
+
+const PRESET_TOPICS = [
+  'Fall risk protocols',
+  'Agitation and confusion management',
+  'Medication administration safety',
+  'Vital signs escalation',
+  'Skin integrity and pressure ulcer care',
+  'Hypertension & fluid monitoring'
+];
 
 export function ClinicalGuidance() {
   const [query, setQuery] = useState('');
@@ -11,137 +19,143 @@ export function ClinicalGuidance() {
   const [error, setError] = useState<string | null>(null);
   const [hasSearched, setHasSearched] = useState(false);
 
-  const handleSearch = async (e?: React.FormEvent) => {
-    e?.preventDefault();
-    
-    if (!query.trim()) return;
-
+  const executeSearch = async (searchTerm: string) => {
+    if (!searchTerm.trim()) return;
     try {
       setLoading(true);
       setError(null);
-      const data = await clinicalGuidanceService.searchClinicalGuidance(query.trim());
+      const data = await clinicalGuidanceService.searchClinicalGuidance(searchTerm.trim());
       setResults(data);
       setHasSearched(true);
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      setError("Failed to fetch guidance. Please try again.");
+      setError('Failed to fetch clinical guidance protocols.');
     } finally {
       setLoading(false);
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter') {
-      handleSearch();
-    }
+  const handleSearchSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    executeSearch(query);
   };
 
   return (
-    <div className="max-w-4xl mx-auto space-y-8">
-      <div className="text-center space-y-2 mb-10">
-        <h1 className="text-3xl font-bold tracking-tight text-foreground font-display">Clinical Guidance</h1>
-        <p className="text-muted-foreground text-lg">Search the approved care guidance library.</p>
-      </div>
+    <div className="space-y-6 mediq-reveal max-w-5xl mx-auto pb-10">
+      <section className="mediq-surface p-6 md:p-8">
+        <p className="mediq-kicker">Clinical Knowledge Workspace</p>
+        <h1 className="font-heading text-3xl md:text-4xl font-bold tracking-tight mt-1 text-[#0B132B]">
+          Approved Clinical Guidance
+        </h1>
+        <p className="text-slate-500 mt-2 text-sm max-w-xl">
+          Search approved care protocols, safety guidelines, and clinical procedures using semantic retrieval.
+        </p>
+      </section>
 
-      {/* Search Input */}
-      <div className="relative group max-w-2xl mx-auto">
-        <div className="absolute inset-y-0 left-4 flex items-center pointer-events-none">
-          <Search className="h-5 w-5 text-muted-foreground group-focus-within:text-mediq-blue transition-colors" />
-        </div>
-        <input
-          type="text"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder="Search a care topic or concern (e.g., fall risk protocols)..."
-          className="w-full bg-card border-2 border-border/60 hover:border-border rounded-full py-4 pl-12 pr-32 text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-4 focus:ring-mediq-blue/10 focus:border-mediq-blue transition-all shadow-sm"
-        />
-        <div className="absolute inset-y-2 right-2">
+      {/* Search Input Box */}
+      <section className="mediq-surface p-6">
+        <form onSubmit={handleSearchSubmit} className="flex flex-col sm:flex-row gap-3">
+          <div className="relative flex-1">
+            <input
+              type="text"
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              placeholder="Search clinical topics (e.g. fall risk, agitation, pressure sore)..."
+              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3.5 text-sm mediq-focus"
+            />
+          </div>
           <button
-            onClick={handleSearch}
+            type="submit"
             disabled={loading || !query.trim()}
-            className={cn(
-              "h-full px-6 rounded-full font-medium text-sm text-white transition-all shadow-sm",
-              loading || !query.trim()
-                ? "bg-mediq-blue/50 cursor-not-allowed"
-                : "bg-mediq-blue hover:bg-mediq-blue/90 hover:-translate-y-0.5 hover:shadow-md"
-            )}
+            className="rounded-full bg-[#1A5CFF] text-white px-7 py-3.5 text-sm font-semibold hover:opacity-95 transition-opacity disabled:opacity-40 shrink-0"
           >
-            {loading ? "Searching..." : "Search"}
+            {loading ? 'Searching...' : 'Search Library'}
+          </button>
+        </form>
+
+        {/* Preset Topic Chips */}
+        <div className="mt-5 pt-4 border-t border-slate-100">
+          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2.5">Suggested Topics</p>
+          <div className="flex flex-wrap gap-2">
+            {PRESET_TOPICS.map(topic => (
+              <button
+                key={topic}
+                onClick={() => {
+                  setQuery(topic);
+                  executeSearch(topic);
+                }}
+                className="px-3.5 py-1.5 rounded-full border border-slate-200 bg-slate-50 text-xs font-semibold text-[#0B132B] hover:border-[#1A5CFF] hover:bg-[#1A5CFF]/5 transition-all"
+              >
+                {topic}
+              </button>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* Results & States */}
+      {loading ? (
+        <div className="mediq-surface p-8 space-y-4">
+          <div className="h-5 w-48 bg-slate-100 animate-pulse rounded" />
+          <div className="h-24 bg-slate-100 animate-pulse rounded-xl" />
+          <div className="h-24 bg-slate-100 animate-pulse rounded-xl" />
+        </div>
+      ) : error ? (
+        <div className="mediq-surface p-8 text-center text-red-600">
+          <p className="font-semibold text-base">{error}</p>
+          <button onClick={() => executeSearch(query)} className="mt-4 rounded-full border border-red-200 px-4 py-2 text-xs font-semibold">
+            Try Search Again
           </button>
         </div>
-      </div>
-
-      {/* States */}
-      <div className="mt-8">
-        {loading && (
-          <div className="py-12 flex flex-col items-center justify-center text-muted-foreground space-y-4">
-            <div className="w-8 h-8 border-4 border-mediq-blue/30 border-t-mediq-blue rounded-full animate-spin" />
-            <p className="font-medium animate-pulse">Searching approved guidance...</p>
+      ) : !hasSearched ? (
+        <div className="mediq-surface p-12 text-center">
+          <div className="w-14 h-14 rounded-2xl bg-[#1A5CFF]/10 text-[#1A5CFF] mx-auto flex items-center justify-center mb-4">
+            <MediQIcon name="guidance" size={26} />
           </div>
-        )}
-
-        {error && (
-          <div className="bg-destructive/5 border border-destructive/20 rounded-2xl p-6 text-center text-destructive">
-            <AlertCircle className="w-8 h-8 mx-auto mb-2 opacity-80" />
-            <p className="font-medium">{error}</p>
+          <h3 className="font-heading text-xl font-bold text-[#0B132B]">Search Approved Guidance</h3>
+          <p className="text-sm text-slate-500 max-w-md mx-auto mt-2 leading-relaxed">
+            Enter a clinical symptom, care protocol topic, or select one of the suggested topics above to view approved procedures.
+          </p>
+        </div>
+      ) : results.length === 0 ? (
+        <div className="mediq-surface p-12 text-center">
+          <h3 className="font-heading text-xl font-bold text-[#0B132B]">No guidance protocols found</h3>
+          <p className="text-sm text-slate-500 max-w-md mx-auto mt-2">
+            No approved guidance matched "{query}". Try adjusting your keywords or search phrase.
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between px-1">
+            <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+              Matching Clinical Protocols ({results.length})
+            </p>
+            <span className="text-xs text-slate-400">Approved Knowledge Base</span>
           </div>
-        )}
 
-        {!loading && !error && !hasSearched && (
-          <div className="py-16 text-center text-muted-foreground">
-            <BookOpen className="w-12 h-12 mx-auto mb-4 opacity-20" />
-            <p>Search approved guidance using a topic or care concern.</p>
-          </div>
-        )}
-
-        {!loading && !error && hasSearched && results.length === 0 && (
-          <div className="py-16 text-center text-muted-foreground">
-            <Search className="w-12 h-12 mx-auto mb-4 opacity-20" />
-            <p className="font-medium text-foreground">No matching guidance found.</p>
-            <p className="text-sm mt-1">Try a different search phrase.</p>
-          </div>
-        )}
-
-        {/* Results List */}
-        {!loading && !error && results.length > 0 && (
-          <div className="space-y-6">
-            <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider pl-1">
-              Relevant Guidance
-            </h2>
-            <div className="grid gap-4">
-              {results.map((result) => (
-                <div 
-                  key={result.id}
-                  className="bg-card border border-border rounded-2xl p-6 shadow-sm hover:shadow-md transition-shadow"
-                >
-                  <div className="flex justify-between items-start gap-4">
-                    <h3 className="font-semibold text-lg text-foreground font-display">
-                      {result.title}
-                    </h3>
-                    {result.similarity_score !== undefined && (
-                      <span className="shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-mediq-blue/10 text-mediq-blue">
-                        <Sparkles className="w-3.5 h-3.5" />
-                        Relevant
-                      </span>
-                    )}
-                  </div>
-                  
-                  <span className="inline-block mt-2 px-2.5 py-0.5 rounded text-[10px] font-medium bg-secondary text-mediq-slate border border-border">
-                    {result.category}
+          <div className="space-y-4">
+            {results.map(g => (
+              <div key={g.id} className="mediq-surface p-6 space-y-4 border border-slate-200/90">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
+                  <h3 className="font-heading text-xl font-bold text-[#0B132B]">{g.title}</h3>
+                  <span className="px-3 py-1 rounded-full bg-[#1A5CFF]/10 text-[#1A5CFF] text-xs font-semibold uppercase tracking-wider self-start sm:self-auto">
+                    {g.category}
                   </span>
-                  
-                  <div className="mt-4 pt-4 border-t border-border/50">
-                    <p className="text-foreground/90 whitespace-pre-wrap leading-relaxed text-sm">
-                      {result.content}
-                    </p>
-                  </div>
                 </div>
-              ))}
-            </div>
+
+                <p className="text-sm text-slate-600 leading-relaxed whitespace-pre-wrap">{g.content}</p>
+
+                <div className="pt-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-400">
+                  <span>Verified Clinical Protocol</span>
+                  {g.similarity_score !== undefined && (
+                    <span>Relevance: {Math.round(g.similarity_score * 100)}%</span>
+                  )}
+                </div>
+              </div>
+            ))}
           </div>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -1,6 +1,6 @@
 import React from 'react';
 
-type IconName = 'overview'|'patients'|'observations'|'handovers'|'guidance'|'support'|'settings'|'notifications'|'reports'|'plus'|'arrow'|'mic'|'shield'|'search'|'close'|'menu'|'logout';
+type IconName = 'overview'|'patients'|'observations'|'handovers'|'guidance'|'support'|'settings'|'notifications'|'reports'|'plus'|'arrow'|'mic'|'shield'|'search'|'close'|'menu'|'logout'|'chevron-down'|'check';
 
 const paths: Record<IconName, React.ReactNode> = {
   overview: <><path d="M4 12h4V4H4v8Zm0 8h4v-5H4v5Zm8 0h4V4h-4v16Zm8 0h-4v-8h4v8Z"/><path d="M3 20h18"/></>,
@@ -20,6 +20,8 @@ const paths: Record<IconName, React.ReactNode> = {
   close: <><path d="m6 6 12 12M18 6 6 18"/></>,
   menu: <><path d="M4 7h16M4 12h16M4 17h16"/></>,
   logout: <><path d="M10 5H5v14h5M14 8l4 4-4 4M9 12h9"/></>,
+  'chevron-down': <path d="m6 9 6 6 6-6"/>,
+  check: <path d="M20 6 9 17l-5-5"/>,
 };
 
 export function MediQIcon({ name, size = 20, strokeWidth = 1.7, className = '' }: { name: IconName; size?: number; strokeWidth?: number; className?: string }) {

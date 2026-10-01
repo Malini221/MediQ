@@ -1,14 +1,131 @@
 import { useMemo, useState } from 'react';
 import { useNotifications } from '../contexts/NotificationContext';
 import { MediQIcon } from '../components/common/MediQIcon';
+import { useNavigate } from 'react-router-dom';
+import { EmptyState } from '../components/ui/states';
+
+type NotificationCategory = 'all' | 'SAFETY' | 'PRIORITY' | 'HANDOVER';
 
 export function Notifications() {
   const { notifications, unreadCount, markAsRead, markAllAsRead } = useNotifications();
-  const [filter,setFilter]=useState('all');
-  const rows=useMemo(()=>notifications.filter(n=>filter==='all'||n.type===filter),[notifications,filter]);
-  return <div className="space-y-6 mediq-reveal max-w-5xl">
-    <section className="mediq-surface p-6 md:p-8 flex flex-col md:flex-row md:items-end justify-between gap-5"><div><p className="mediq-kicker">Notification center</p><h1 className="font-heading text-3xl font-bold mt-2">Stay close to what changed.</h1><p className="text-slate-500 mt-2">Safety, priority and handover events relevant to your authorized care workspace.</p></div>{unreadCount>0&&<button onClick={markAllAsRead} className="rounded-full border border-slate-200 px-4 py-2.5 text-sm font-semibold">Mark all read</button>}</section>
-    <div className="flex gap-2 overflow-x-auto">{[['all','All'],['SAFETY','Safety'],['PRIORITY','Priority'],['HANDOVER','Handovers']].map(([v,l])=><button key={v} onClick={()=>setFilter(v)} className={`px-4 py-2 rounded-full text-sm font-semibold border whitespace-nowrap ${filter===v?'bg-white text-[#0B132B] border-white':'text-white/60 border-white/15 hover:text-white'}`}>{l}</button>)}</div>
-    {rows.length===0?<div className="mediq-surface p-14 text-center"><div className="w-14 h-14 rounded-2xl bg-[#1A5CFF]/10 text-[#1A5CFF] mx-auto flex items-center justify-center"><MediQIcon name="notifications" size={25}/></div><h2 className="font-heading text-xl font-bold mt-5">You're all caught up</h2><p className="text-sm text-slate-500 mt-2">New authorized events will appear here.</p></div>:<div className="space-y-3">{rows.map(n=><button key={n.id} onClick={()=>markAsRead(n.id)} className={`w-full mediq-surface p-5 text-left flex gap-4 ${!n.read?'border-[#1A5CFF]/35':''}`}><div className="w-10 h-10 rounded-xl bg-[#1A5CFF]/10 text-[#1A5CFF] flex items-center justify-center shrink-0"><MediQIcon name={n.type==='HANDOVER'?'handovers':n.type==='SAFETY'?'shield':'observations'} size={18}/></div><div className="min-w-0 flex-1"><div className="flex justify-between gap-4"><p className="font-semibold">{n.title}</p>{!n.read&&<span className="w-2 h-2 rounded-full bg-[#1A5CFF] mt-2 shrink-0"/>}</div><p className="text-sm text-slate-500 mt-1">{n.message}</p><p className="text-xs text-slate-400 mt-2">{new Date(n.created_at).toLocaleString()}</p></div></button>)}</div>}
-  </div>;
+  const [filter, setFilter] = useState<NotificationCategory>('all');
+  const navigate = useNavigate();
+
+  const rows = useMemo(() => {
+    return notifications.filter(n => filter === 'all' || n.type === filter);
+  }, [notifications, filter]);
+
+  const handleNotificationClick = (id: string, type: string, payload?: any) => {
+    markAsRead(id);
+    // Route meaningfully to context
+    if (type === 'HANDOVER' && payload?.handoverId) {
+      navigate(`/dashboard/handovers/${payload.handoverId}`);
+    } else if (payload?.observationId) {
+      navigate(`/dashboard/observations/${payload.observationId}`);
+    } else if (payload?.patientId) {
+      navigate(`/dashboard/patients/${payload.patientId}`);
+    } else if (type === 'HANDOVER') {
+      navigate('/dashboard/handovers');
+    } else {
+      navigate('/dashboard/observations');
+    }
+  };
+
+  return (
+    <div className="space-y-6 mediq-reveal max-w-5xl mx-auto pb-10">
+      <section className="mediq-surface p-6 md:p-8 flex flex-col md:flex-row md:items-end justify-between gap-5">
+        <div>
+          <p className="mediq-kicker">Notification Action Center</p>
+          <h1 className="font-heading text-3xl md:text-4xl font-bold tracking-tight mt-1 text-[#0B132B]">
+            Care Action Updates
+          </h1>
+          <p className="text-slate-500 mt-2 text-sm max-w-xl">
+            Real-time safety alerts, observations requiring confirmation, and unacknowledged shift handovers.
+          </p>
+        </div>
+
+        {unreadCount > 0 && (
+          <button
+            onClick={markAllAsRead}
+            className="rounded-full border border-slate-200 bg-slate-50 px-5 py-2.5 text-xs font-semibold text-[#0B132B] hover:border-[#1A5CFF] transition-all shrink-0"
+          >
+            Mark all ({unreadCount}) read
+          </button>
+        )}
+      </section>
+
+      {/* Category Filter Pills */}
+      <section className="mediq-surface p-2 flex gap-1 overflow-x-auto">
+        {[
+          ['all', 'All Updates'],
+          ['SAFETY', 'Safety Alerts'],
+          ['PRIORITY', 'Priority Escalations'],
+          ['HANDOVER', 'Shift Handovers']
+        ].map(([val, label]) => (
+          <button
+            key={val}
+            onClick={() => setFilter(val as NotificationCategory)}
+            className={`px-5 py-2.5 rounded-xl text-xs font-semibold uppercase tracking-wider transition-all whitespace-nowrap ${
+              filter === val
+                ? 'bg-[#1A5CFF] text-white'
+                : 'text-slate-600 hover:bg-slate-50 hover:text-[#0B132B]'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </section>
+
+      {/* List / Empty State */}
+      {rows.length === 0 ? (
+        <EmptyState
+          title={filter !== 'all' ? 'No notifications in this category' : "You're all caught up!"}
+          description={
+            filter !== 'all'
+              ? 'Switch back to "All Updates" to view your notification history.'
+              : 'New safety alerts, priority observations, and handover updates will appear here in real time.'
+          }
+          icon="notifications"
+        />
+      ) : (
+        <div className="space-y-3">
+          {rows.map(n => (
+            <button
+              key={n.id}
+              onClick={() => handleNotificationClick(n.id, n.type, (n as any).payload)}
+              className={`w-full mediq-surface p-5 text-left flex items-start gap-4 transition-all hover:border-[#1A5CFF]/40 ${
+                !n.read ? 'border-l-4 border-l-[#1A5CFF] bg-[#1A5CFF]/[0.02]' : ''
+              }`}
+            >
+              <div
+                className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
+                  n.type === 'SAFETY'
+                    ? 'bg-red-50 text-red-600'
+                    : n.type === 'HANDOVER'
+                    ? 'bg-purple-50 text-purple-600'
+                    : 'bg-[#1A5CFF]/10 text-[#1A5CFF]'
+                }`}
+              >
+                <MediQIcon name={n.type === 'HANDOVER' ? 'handovers' : n.type === 'SAFETY' ? 'shield' : 'observations'} size={18} />
+              </div>
+
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center justify-between gap-4">
+                  <p className="font-semibold text-sm text-[#0B132B]">{n.title}</p>
+                  {!n.read && <span className="w-2.5 h-2.5 rounded-full bg-[#1A5CFF] shrink-0" />}
+                </div>
+                <p className="text-sm text-slate-500 mt-1 leading-relaxed">{n.message}</p>
+                <div className="flex items-center justify-between mt-3 pt-2 border-t border-slate-100">
+                  <span className="text-xs text-slate-400">{new Date(n.created_at).toLocaleString()}</span>
+                  <span className="text-xs font-semibold text-[#1A5CFF] flex items-center gap-1">
+                    Open Record &rarr;
+                  </span>
+                </div>
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
