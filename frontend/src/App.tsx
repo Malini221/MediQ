@@ -112,56 +112,58 @@ async function shareCertificate(certificate: typeof generatedCertificate) {
   return "copied";
 }
 
-async function saveIssuedCertificate(certificate: typeof generatedCertificate) {
-  const response = await fetch("/api/certificates", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      student: certificate.student,
-      course: certificate.course,
-      grade: certificate.grade,
-      issuer: certificate.issuer,
-      issued: certificate.issued,
-      type: "Certificate of Achievement",
-    }),
-  });
-  if (!response.ok) throw new Error("Could not save certificate");
-  const payload = await response.json();
-  return payload.certificate;
+function saveIssuedCertificate(certificate: typeof generatedCertificate) {
   try {
-    return certificate;
+    const raw = localStorage.getItem("certichain:certificates");
+    const existing = raw ? JSON.parse(raw) : [];
+    const next = Array.isArray(existing)
+      ? [...existing.filter((item) => item?.id !== certificate.id), certificate]
+      : [certificate];
+    localStorage.setItem("certichain:certificates", JSON.stringify(next));
+    localStorage.setItem("certichain:latest-certificate", JSON.stringify(certificate));
   } catch {}
 }
 
-async function loadCertificate(id: string) {
-  const response = await fetch(`/api/certificates/${encodeURIComponent(id)}`);
-  if (!response.ok) return null;
-  const payload = await response.json();
-  return payload.certificate ?? payload;
+function loadCertificate(id: string) {
+  if (id === demoCertificate.id) return demoCertificate;
+  try {
+    const raw = localStorage.getItem("certichain:certificates");
+    const certificates = raw ? JSON.parse(raw) : [];
+    if (Array.isArray(certificates)) {
+      const match = certificates.find((item) => item?.id === id);
+      if (match) return match;
+    }
+    const latest = localStorage.getItem("certichain:latest-certificate");
+    if (latest) {
+      const parsed = JSON.parse(latest);
+      if (parsed.id === id) return parsed;
+    }
+  } catch {}
+  return null;
 }
 
-async function persistRevocation(id: string, reason = "Certificate withdrawn by issuing institution.") {
-  const response = await fetch(`/api/certificates/${encodeURIComponent(id)}/revoke`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ reason }),
-  });
-  if (!response.ok) throw new Error("Could not revoke certificate");
-  return response.json();
+function persistRevocation(id: string, reason = "Certificate withdrawn by issuing institution.") {
+  localStorage.setItem(`certichain:revoked:${id}`, JSON.stringify({
+    revoked: true,
+    reason,
+    date: new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "long", year: "numeric" }),
+  }));
 }
 
-async function getRevocation(id: string) {
-  const response = await fetch(`/api/certificates/${encodeURIComponent(id)}`);
-  if (!response.ok) return null;
-  const payload = await response.json();
-  const certificate = payload.certificate ?? payload;
-  return certificate?.status === "REVOKED"
-    ? { revoked: true, reason: certificate.revocationReason, date: certificate.revokedAt }
-    : null;
+function getRevocation(id: string) {
+  try {
+    const raw = localStorage.getItem(`certichain:revoked:${id}`);
+    if (!raw) return null;
+    if (raw === "1") return { revoked: true, reason: "Certificate withdrawn by issuing institution.", date: "04 October 2026" };
+    const parsed = JSON.parse(raw);
+    return parsed?.revoked ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
-async function isPersistedRevoked(id: string) {
-  return Boolean(await getRevocation(id));
+function isPersistedRevoked(id: string) {
+  return Boolean(getRevocation(id));
 }
 
 function RevokeModal({ certificate, onClose, onRevoked }: { certificate: typeof generatedCertificate; onClose: ()=>void; onRevoked: (reason: string)=>void }) {
@@ -193,30 +195,13 @@ function IssuerPage({ onBack }: { onBack: () => void }) {
 
   const issue = async () => {
     if (!student.trim()) return;
-    try {
-      const response = await fetch("/api/certificates", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          student,
-          email,
-          course,
-          grade,
-          issuer: "ABC Institute of Technology",
-          issued,
-          type,
-        }),
-      });
-      if (!response.ok) throw new Error("Issue failed");
-      const payload = await response.json();
-      const certificate = payload.certificate;
-      setIssuedCertificate(certificate);
-      setStep("ready");
-      setCreated(true);
-    } catch {
-      setToast("Backend unavailable. Start the CertiChain API and try again.");
-      setTimeout(() => setToast(""), 2800);
-    }
+    const id = `CC-${new Date().getFullYear()}-${crypto.randomUUID().slice(0, 6).toUpperCase()}`;
+    const fingerprint = await certificateFingerprint({ id, student, course, grade, issuer: "ABC Institute of Technology", issued });
+    const certificate = { id, student, course, grade, issuer: "ABC Institute of Technology", issued, hash: fingerprint };
+    setIssuedCertificate(certificate);
+    saveIssuedCertificate(certificate);
+    setStep("ready");
+    setCreated(true);
   };
 
   return <main className="issuer-page">
